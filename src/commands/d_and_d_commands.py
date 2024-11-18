@@ -5,12 +5,20 @@ import pytz
 from models.player import Player
 
 class DAndDCommands(commands.Cog):
-    def __init__(self, bot, rs_api, d_and_d_tracker):
+    def __init__(self, bot, rs_api, d_and_d_tracker, player_data_manager):
         self.bot = bot
         self.rs_api = rs_api
         self.d_and_d_tracker = d_and_d_tracker
+        self.player_data_manager = player_data_manager
 
-    async def send_activities(self, ctx, username: str, interval: str):
+    async def send_activities(self, ctx, interval: str):
+        user_id = str(ctx.author.id)
+        username = self.player_data_manager.get_player_name(user_id)
+        
+        if not username:
+            await ctx.send("Please set your RuneScape name first using !setrsn <name>")
+            return
+        
         player_data = self.rs_api.get_player_stats(username)
         quests_data = self.rs_api.get_player_quests(username)
         player = Player(player_data, quests_data)
@@ -40,10 +48,11 @@ class DAndDCommands(commands.Cog):
         )
         
         for activity in activities:
-            if activity.is_available(user_id):
+            if self.d_and_d_tracker.is_available(activity.name, user_id):
                 status = "🔵 Available"
             else:
-                next_reset = activity._get_next_reset(activity.last_completed[user_id])
+                completion_time = self.d_and_d_tracker.get_completion_time(activity.name, user_id)
+                next_reset = self.d_and_d_tracker._get_next_reset(completion_time, activity.name)
                 status = f"🔴 Completed (Resets <t:{int(next_reset.timestamp())}:R>)"
                 
             embed.add_field(
@@ -54,28 +63,50 @@ class DAndDCommands(commands.Cog):
         
         await ctx.send(embed=embed)
 
+    async def _handle_activity_with_suggestions(self, ctx, activity_name: str, action='complete'):
+        matches = self.d_and_d_tracker.find_closest_activity(activity_name, 0.5)
+
+        if len(matches) == 1:
+            # If only one match, use it automatically
+            matched_activity = matches[0]
+            if action == 'complete':
+                return await self.mark_complete(ctx, activity_name=matched_activity)
+            else:
+                return await self.unmark_complete(ctx, activity_name=matched_activity)
+        elif matches:
+            suggestion_text = "\nDid you mean one of these?\n" + "\n".join(matches)
+            await ctx.send(f"Activity '{activity_name}' not found.{suggestion_text}")
+        else:
+            await ctx.send(f"Activity '{activity_name}' not found.")
+
     @commands.command(name='daily')
-    async def show_daily(self, ctx, username: str):
-        await self.send_activities(ctx, username, 'daily')
+    async def show_daily(self, ctx):
+        await self.send_activities(ctx, 'daily')
 
     @commands.command(name='weekly')
-    async def show_weekly(self, ctx, username: str):
-        await self.send_activities(ctx, username, 'weekly')
+    async def show_weekly(self, ctx):
+        await self.send_activities(ctx, 'weekly')
 
     @commands.command(name='monthly')
-    async def show_monthly(self, ctx, username: str):
-        await self.send_activities(ctx, username, 'monthly')
+    async def show_monthly(self, ctx):
+        await self.send_activities(ctx, 'monthly')
+
+    @commands.command(name='alldnd')
+    async def show_all_dnds(self, ctx):
+        await self.send_activities(ctx, 'daily')
+        await self.send_activities(ctx, 'weekly')
+        await self.send_activities(ctx, 'monthly')
 
     @commands.command(name='complete')
-    async def mark_complete(self, ctx, activity_name: str):
+    async def mark_complete(self, ctx, *, activity_name: str):
         user_id = str(ctx.author.id)
-        activity_name = activity_name.lower()
+        activity_name = activity_name.lower().replace(' ', '_')
         
         for period in ['daily', 'weekly', 'monthly']:
             activities = getattr(self.d_and_d_tracker, f'{period}_activities')
             if activity_name in activities:
                 activity = activities[activity_name]
-                activity.mark_completed(user_id)
+                activity.mark_completed(user_id, self.d_and_d_tracker)
                 
                 embed = discord.Embed(
                     title="Activity Completed!",
@@ -93,7 +124,29 @@ class DAndDCommands(commands.Cog):
                 await ctx.send(embed=embed)
                 return
                 
-        await ctx.send(f"Activity '{activity_name}' not found.")
+        await self._handle_activity_with_suggestions(ctx, activity_name, 'complete')
+
+    @commands.command(name='uncomplete')
+    async def unmark_complete(self, ctx, *, activity_name: str):
+        user_id = str(ctx.author.id)
+        activity_name = activity_name.lower().replace(' ', '_')
+        
+        for period in ['daily', 'weekly', 'monthly']:
+            activities = getattr(self.d_and_d_tracker, f'{period}_activities')
+            if activity_name in activities:
+                if self.d_and_d_tracker.remove_completion(activity_name, user_id):
+                    embed = discord.Embed(
+                        title="Activity Uncompleted",
+                        description=f"Removed completion status for {activities[activity_name].name}",
+                        color=discord.Color.blue()
+                    )
+                    await ctx.send(embed=embed)
+                    return
+                else:
+                    await ctx.send(f"Activity '{activity_name.replace('_', ' ')}' was not marked as completed.")
+                return
+                
+        await self._handle_activity_with_suggestions(ctx, activity_name, 'uncomplete')
 
 async def setup(bot):
     await bot.add_cog(DAndDCommands(bot))

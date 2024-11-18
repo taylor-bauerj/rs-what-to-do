@@ -8,7 +8,7 @@ class TimedActivity:
         self.requirements = requirements or {}
         self.last_completed = {}  # Dictionary to store completion time per user
         
-    def is_available(self, user_id):
+    def is_available(self, user_id, tracker):
         if user_id not in self.last_completed:
             return True
             
@@ -34,5 +34,5 @@ class TimedActivity:
                 next_reset = completion_time.replace(month=completion_time.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
         return next_reset
 
-    def mark_completed(self, user_id):
-        self.last_completed[user_id] = datetime.now(pytz.UTC)
+    def mark_completed(self, user_id, tracker):
+        tracker.mark_completed(self.name, user_id)
